@@ -1,0 +1,22 @@
+---
+description: "Pipeline for BloodHound Enterprise integration"
+processors:
+  - set:
+      field: "bloodhound.config.base_url"
+      value: "{{{vars.base_url}}}"
+      ignore_empty_value: false
+  - set:
+      field: "bloodhound.config.token_id"
+      value: "{{{vars.token_id}}}"
+      ignore_empty_value: false
+  #TODO: secure/encrypt password before transfering over the network
+  - set:
+      field: "bloodhound.config.token_api_key"
+      value: "{{{vars.token_api_key}}}"
+      ignore_empty_value: false
+  - set:
+      field: "event.kind"
+      value: "event"
+  - set:
+      field: "event.category"
+      value: ["iam"]

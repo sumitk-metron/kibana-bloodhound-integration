@@ -1,0 +1,46 @@
+config_version: 1
+interval: {{interval}}
+resource:
+  url: {{base_url}}
+  tracer:
+    enabled: {{enable_request_tracer}}
+    filename: "../../logs/cel/health_check-trace-*.ndjson"
+    maxbackups: 5
+    maxsize: 5
+state:
+  token_id: {{token_id}}
+  token_key: {{token_key}}
+  base_url: {{base_url}}
+program: |
+  "GET".as(method,
+  "/api/v2/self".as(uri,
+  now.format("2006-01-02T15:04:05Z07:00").as(timestamp,
+  timestamp.substring(0, 13).as(date_prefix,
+  hmac(method + uri, "sha256", bytes(state.token_key)).as(op_key,
+  hmac(date_prefix, "sha256", op_key).as(date_key,
+  base64(hmac("", "sha256", date_key)).as(signature,
+  request(method, state.base_url + uri).with({
+    "Header": {
+      "Authorization": ["bhesignature " + state.token_id],
+      "RequestDate": [timestamp],
+      "Signature": [signature],
+      "Content-Type": ["application/json"],
+      "User-Agent": ["bhe-elastic-integration 0.2.0"]
+    }
+  }).do_request().as(resp,
+    resp.StatusCode == 200 ?
+      state.with({
+        "events": [bytes(resp.Body).decode_json()],
+        "want_more": false
+      })
+    :
+      state.with({
+        "events": [{
+          "error": {
+            "code": string(resp.StatusCode),
+            "message": string(resp.Body)
+          }
+        }],
+        "want_more": false
+      })
+  ))))))))
