@@ -1,22 +1,4 @@
-config_version: 1
-interval: {{interval}}
-resource:
-  url: {{base_url}}
-state:
-  token_id: {{token_id}}
-  token_key: {{token_key}}
-  base_url: {{base_url}}
-  kibana_url: {{kibana_url}}
-  kibana_api_key: {{kibana_api_key}}
-  step: 1
-  domain_id: ""
-  asset_group_tag_id: ""
-  type_index: 0
-  finding_index: 0
-  finding_types: []
-  findings: []
-program: |
- (state.step == 4 ? "POST" : "GET").as(method,
+(state.step == 4 ? "POST" : "GET").as(method,
 (state.step == 1 ? "/api/v2/available-domains" :
  state.step == 2 ? "/api/v2/domains/" + state.domain_id + "/available-types?asset_group_tag_id=" + state.asset_group_tag_id :
  state.step == 3 ? "/api/v2/findings/" + state.finding_types[state.type_index] :
@@ -44,7 +26,7 @@ request(method, (state.step == 4 ? state.kibana_url : state.base_url) + uri).wit
   "Body": body_data,
   "InsecureSkipVerify": true
 }).do_request().as(resp, 
-has(resp.StatusCode) && (resp.StatusCode == 200 || resp.StatusCode == 201) ?
+(has(resp.StatusCode) && (resp.StatusCode == 200 || resp.StatusCode == 201)) ?
     bytes(resp.Body).decode_json().as(parsed_body,
       state.step == 1 ?
         (size(parsed_body.data) > 0 ?

@@ -38,3 +38,4 @@ ENV/
 # OS
 .DS_Store
 
+bloodhound_integration/state.json
