@@ -3,7 +3,7 @@
  state.step == 2 ? "/api/v2/domains/" + state.domain_id + "/available-types?asset_group_tag_id=" + state.asset_group_tag_id :
  state.step == 3 ? "/api/v2/findings/" + state.finding_types[state.type_index] :
  "/api/cases").as(uri,
-(state.step == 4 ? 
+(state.step == 4 ?
   {"title": (has(state.findings[state.finding_index].title) ? state.findings[state.finding_index].title : "Untitled Finding"),
    "tags": ["bloodhound", (has(state.findings[state.finding_index].type) ? state.findings[state.finding_index].type : "unknown")],
    "description": "## Short Remediation\n\n" + (has(state.findings[state.finding_index].short_remediation) ? state.findings[state.finding_index].short_remediation : "") + "\n\n## Long Remediation\n\n" + (has(state.findings[state.finding_index].long_remediation) ? state.findings[state.finding_index].long_remediation : ""),
@@ -17,67 +17,78 @@ timestamp.substring(0, 13).as(date_prefix,
 hmac(method + uri, "sha256", bytes(state.token_key)).as(op_key,
 hmac(date_prefix, "sha256", op_key).as(date_key,
 base64(hmac(bytes(body_data), "sha256", date_key)).as(signature,
+int(state.step).as(current_step,
 
-request(method, (state.step == 4 ? state.kibana_url : state.base_url) + uri).with({
-  "Header": (state.step == 4 ? 
+request(method, (current_step == 4 ? state.kibana_url : state.base_url) + uri).with({
+  "Header": (current_step == 4 ?
     {"Authorization": ["ApiKey " + state.kibana_api_key], "Content-Type": ["application/json"], "kbn-xsrf": ["true"]} :
     {"Authorization": ["bhesignature " + state.token_id], "RequestDate": [timestamp], "Signature": [signature], "Content-Type": ["application/json"]}
   ),
   "Body": body_data,
   "InsecureSkipVerify": true
-}).do_request().as(resp, 
-(has(resp.StatusCode) && (resp.StatusCode == 200 || resp.StatusCode == 201)) ?
-    bytes(resp.Body).decode_json().as(parsed_body,
-      state.step == 1 ?
-        (size(parsed_body.data) > 0 ?
-          state.with({
-            "step": 2, 
-            "domain_id": string(parsed_body.data[0].id), 
-            "asset_group_tag_id": (has(parsed_body.data[0].exposures) && size(parsed_body.data[0].exposures) > 0 ? string(parsed_body.data[0].exposures[0].asset_group_tag.id) : "1"), 
-            "want_more": true, 
-            "events": [parsed_body.with({"_step": 1, "_uri": uri})]
-          }) :
-          state.with({"events": [{"error": "No domains found", "_step": 1}], "step": 1, "want_more": false})) :
-      state.step == 2 ?
-        (size(parsed_body.data) > 0 ?
-          state.with({
-            "step": 3, 
-            "finding_types": parsed_body.data.map(t, type(t) == string ? t : (has(t.id) ? string(t.id) : string(t))), 
-            "type_index": 0, 
-            "want_more": true, 
-            "events": [parsed_body.with({"_step": 2, "_uri": uri})]
-          }) :
-          state.with({"events": [{"error": "No types found", "_step": 2}], "step": 1, "want_more": false})) :
-      state.step == 3 ?
-        (size(parsed_body.data) > 0 ?
-          state.with({
-            "step": 4, 
-            "findings": (type(parsed_body.data) == list ? parsed_body.data : [parsed_body.data]), 
-            "finding_index": 0, 
-            "want_more": true, 
-            "events": [parsed_body.with({"_step": 3, "_uri": uri})]
-          }) :
-          (state.type_index + 1 < size(state.finding_types) ?
-            state.with({"step": 3, "type_index": state.type_index + 1, "finding_index": 0, "want_more": true}) :
-            state.with({"step": 1, "want_more": false}))) :
-      state.step == 4 ?
-        (state.finding_index + 1 < size(state.findings) ?
-          state.with({
-            "step": 4, 
-            "finding_index": state.finding_index + 1, 
-            "want_more": true, 
-            "events": [parsed_body.with({"_step": 4, "_uri": uri})]
-          }) :
-          (state.type_index + 1 < size(state.finding_types) ?
-            state.with({"step": 3, "type_index": state.type_index + 1, "finding_index": 0, "want_more": true, "events": [parsed_body.with({"_step": 4, "_uri": uri})] }) :
-            state.with({"step": 1, "want_more": false, "events": [parsed_body.with({"_step": 4, "_uri": uri})]}))) :
-      // Default fallback for state.step
-      state.with({"step": 1, "want_more": false})
-    ) : 
-    // This is the ELSE for the StatusCode check
+}).do_request().as(resp,
+bytes(resp.Body).decode_json().as(parsed_body,
+
+current_step == 1 ?
+  (has(parsed_body.data) && size(parsed_body.data) > 0 ?
     state.with({
-      "events": [{"error": string(resp.Body), "status_code": resp.StatusCode, "_step": state.step, "_uri": uri}], 
-      "step": 1, 
-      "want_more": false
-    })
+      "step": 2,
+      "domain_id": string(parsed_body.data[0].id),
+      "asset_group_tag_id": (has(parsed_body.data[0].exposures) && size(parsed_body.data[0].exposures) > 0 ? string(parsed_body.data[0].exposures[0].asset_group_tag.id) : "1"),
+      "want_more": true,
+      "events": [parsed_body.with({"_step": 1, "_uri": uri})]
+    }) :
+    state.with({"events": [{"error": "No domains found", "_step": 1}], "step": 1, "want_more": false})) :
+
+current_step == 2 ?
+  (has(parsed_body.data) && size(parsed_body.data) > 0 ?
+    state.with({
+      "step": 3,
+      "finding_types": parsed_body.data.map(t, type(t) == string ? t : (has(t.id) ? string(t.id) : string(t))),
+      "type_index": 0,
+      "want_more": true,
+      "events": [parsed_body.with({"_step": 2, "_uri": uri})]
+    }) :
+    state.with({"events": [{"error": "No types found", "_step": 2}], "step": 1, "want_more": false})) :
+
+current_step == 3 ?
+  (has(parsed_body.data) && size(parsed_body.data) > 0 ?
+    state.with({
+      "step": 4,
+      "findings": (type(parsed_body.data) == list ? parsed_body.data : [parsed_body.data]),
+      "finding_index": 0,
+      "want_more": true,
+      "events": [parsed_body.with({"_step": 3, "_uri": uri})]
+    }) :
+    (int(state.type_index) + 1 < size(state.finding_types) ?
+      state.with({"step": 3, "type_index": int(state.type_index) + 1, "finding_index": 0, "want_more": true}) :
+      state.with({"step": 1, "want_more": false}))) :
+
+current_step == 4 ?
+  (has(parsed_body.id) ?
+    (int(state.finding_index) + 1 < size(state.findings) ?
+      state.with({
+        "step": 4,
+        "finding_index": int(state.finding_index) + 1,
+        "want_more": true,
+        "events": [parsed_body.with({"_step": 4, "_uri": uri})]
+      }) :
+      (int(state.type_index) + 1 < size(state.finding_types) ?
+        state.with({"step": 3, "type_index": int(state.type_index) + 1, "finding_index": 0, "want_more": true, "events": [parsed_body.with({"_step": 4, "_uri": uri})]}) :
+        state.with({"step": 1, "want_more": false, "events": [parsed_body.with({"_step": 4, "_uri": uri})]}))) :
+    (int(state.finding_index) + 1 < size(state.findings) ?
+      state.with({
+        "step": 4,
+        "finding_index": int(state.finding_index) + 1,
+        "want_more": true,
+        "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 4, "_uri": uri}]
+      }) :
+      (int(state.type_index) + 1 < size(state.finding_types) ?
+        state.with({"step": 3, "type_index": int(state.type_index) + 1, "finding_index": 0, "want_more": true}) :
+        state.with({"step": 1, "want_more": false})))) :
+
+// Default fallback
+state.with({"step": 1, "want_more": false})
+
+))
 )))))))))
