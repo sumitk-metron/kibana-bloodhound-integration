@@ -1,26 +1,28 @@
 // Step 1: GET all domains
 // Step 2: GET available-types for domain[domain_index] + tag[tag_index]
-// Step 3: GET findings for type[type_index], accumulate into all_findings
+// Step 3: GET findings for type[type_index], accumulate (dedup by domain_id+title)
 // Step 4: GET existing Kibana cases tagged "bloodhound"
-// Step 5: POST create case for new_findings[finding_index]
-// Step 6: DELETE stale case cases_to_delete[delete_index]
+// Step 5: GET severity for new_findings[finding_index] from Bloodhound domain details API
+// Step 6: POST create case for new_findings[finding_index] (with dynamic severity + tag name)
+// Step 7: DELETE stale case cases_to_delete[delete_index]
 
-(state.step == 5 ? "POST" : state.step == 6 ? "DELETE" : "GET").as(method,
+(state.step == 6 ? "POST" : state.step == 7 ? "DELETE" : "GET").as(method,
 (state.step == 1 ? "/api/v2/available-domains" :
- state.step == 2 ? "/api/v2/domains/" + string(state.domains[int(state.domain_index)].id) + "/available-types?asset_group_tag_id=" + string(state.domains[int(state.domain_index)].tags[int(state.tag_index)]) :
+ state.step == 2 ? "/api/v2/domains/" + string(state.domains[int(state.domain_index)].id) + "/available-types?asset_group_tag_id=" + string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].id) :
  state.step == 3 ? "/api/v2/findings/" + state.finding_types[int(state.type_index)] :
- state.step == 4 ? "/api/cases/_find?tags=bloodhound&perPage=10000" :
- state.step == 5 ? "/api/cases" :
+ state.step == 4 ? "/api/cases/_find?perPage=100" :
+ state.step == 5 ? "/api/v2/domains/" + string(state.new_findings[int(state.finding_index)]._domain_id) + "/details?finding=" + string(state.new_findings[int(state.finding_index)].type) + "&skip=0&limit=1&asset_group_tag_id=" + string(state.new_findings[int(state.finding_index)]._asset_group_tag_id) :
+ state.step == 6 ? "/api/cases" :
  "/api/cases?ids=%5B%22" + string(state.cases_to_delete[int(state.delete_index)]) + "%22%5D"
 ).as(uri,
 
-// Build request body (only for step 5 - case creation)
-(state.step == 5 && has(state.new_findings) && size(state.new_findings) > 0 ?
-  {"title": (has(state.new_findings[int(state.finding_index)].title) ? state.new_findings[int(state.finding_index)].title : "Untitled Finding"),
+// Build request body (only for step 6 - case creation)
+(state.step == 6 && has(state.new_findings) && size(state.new_findings) > 0 ?
+  {"title": (has(state.new_findings[int(state.finding_index)]._unique_key) ? state.new_findings[int(state.finding_index)]._unique_key : "Untitled Finding"),
    "category": (has(state.new_findings[int(state.finding_index)]._domain_name) ? string(state.new_findings[int(state.finding_index)]._domain_name) : ""),
-   "severity": "high",
+   "severity": (has(state.new_findings[int(state.finding_index)]._severity) ? string(state.new_findings[int(state.finding_index)]._severity) : "low"),
    "tags": ["bloodhound",
-            (has(state.new_findings[int(state.finding_index)]._asset_group_tag_id) ? string(state.new_findings[int(state.finding_index)]._asset_group_tag_id) : ""),
+            (has(state.new_findings[int(state.finding_index)]._asset_group_tag_name) ? string(state.new_findings[int(state.finding_index)]._asset_group_tag_name) : ""),
             (has(state.new_findings[int(state.finding_index)].type) ? state.new_findings[int(state.finding_index)].type : "unknown")],
    "description": "## Short Remediation\n\n" +
      (has(state.new_findings[int(state.finding_index)].short_remediation) ? state.new_findings[int(state.finding_index)].short_remediation : "") +
@@ -33,7 +35,7 @@
   }.encode_json()
 : "").as(body_data,
 
-// HMAC signature computation (used for BloodHound API steps 1-3)
+// HMAC signature computation (used for BloodHound API steps 1-3, 5)
 now.format("2006-01-02T15:04:05Z07:00").as(timestamp,
 timestamp.substring(0, 13).as(date_prefix,
 hmac(method + uri, "sha256", bytes(state.token_key)).as(op_key,
@@ -42,24 +44,28 @@ base64(hmac(bytes(body_data), "sha256", date_key)).as(signature,
 int(state.step).as(current_step,
 
 // Execute HTTP request
-request(method, (current_step >= 4 ? state.kibana_url : state.base_url) + uri).with({
-  "Header": (current_step >= 4 ?
+request(method, (current_step == 4 || current_step == 6 || current_step == 7 ? state.kibana_url : state.base_url) + uri).with({
+  "Header": (current_step == 4 || current_step == 6 || current_step == 7 ?
     {"Authorization": ["ApiKey " + state.kibana_api_key], "Content-Type": ["application/json"], "kbn-xsrf": ["true"]} :
     {"Authorization": ["bhesignature " + state.token_id], "RequestDate": [timestamp], "Signature": [signature], "Content-Type": ["application/json"]}
   ),
   "Body": body_data,
   "InsecureSkipVerify": true
 }).do_request().as(resp,
-bytes(resp.Body).decode_json().as(parsed_body,
+bytes(
+  (string(resp.Body).startsWith('{') || string(resp.Body).startsWith('[')) ?
+  string(resp.Body) :
+  "{}"
+).decode_json().as(parsed_body,
 
-// ─── Step 1: Parse all domains with their asset group tag IDs ───
+// ─── Step 1: Parse all domains with their asset group tag IDs and names ───
 current_step == 1 ?
   (has(parsed_body.data) && size(parsed_body.data) > 0 ?
     parsed_body.data.map(d, {
       "id": string(d.id),
       "name": string(d.name),
       "tags": (has(d.exposures) && size(d.exposures) > 0 ?
-        d.exposures.map(e, string(e.asset_group_tag.id)) : ["1"])
+        d.exposures.map(e, {"id": string(e.asset_group_tag.id), "name": string(e.asset_group_tag.name)}) : [{"id": "1", "name": "default"}])
     }).as(domains_list,
       state.with({
         "step": 2,
@@ -96,18 +102,22 @@ current_step == 2 ?
       "events": [{"info": "All domains processed, fetching existing cases", "_step": 2}]}))
   ) :
 
-// ─── Step 3: Fetch findings and accumulate, then advance ───
+// ─── Step 3: Fetch findings and accumulate (deduped by domain_id+title) ───
 current_step == 3 ?
-  // Accumulate findings with domain/tag metadata
+  // Accumulate findings with domain/tag metadata, dedup by _unique_key (domain_id|title)
   (has(parsed_body.data) && size(parsed_body.data) > 0 ?
-    state.all_findings + (type(parsed_body.data) == list ? parsed_body.data : [parsed_body.data]).map(f,
+    (state.all_findings + (type(parsed_body.data) == list ? parsed_body.data : [parsed_body.data]).map(f,
       f.with({
         "_domain_id": string(state.domains[int(state.domain_index)].id),
         "_domain_name": string(state.domains[int(state.domain_index)].name),
-        "_asset_group_tag_id": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)]),
-        "_asset_group_tag_name": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)])
+        "_asset_group_tag_id": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].id),
+        "_asset_group_tag_name": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].name),
+        "_unique_key": string(state.domains[int(state.domain_index)].id) + "|" + (has(f.title) ? f.title : "Untitled Finding")
       })
-    ) : state.all_findings
+    ).filter(f,
+      // Keep only new findings whose _unique_key is NOT already in all_findings
+      !state.all_findings.exists(existing, existing._unique_key == f._unique_key)
+    )) : state.all_findings
   ).as(updated_findings,
     // Advance: more types → step 3, more tags → step 2, more domains → step 2, else → step 4
     int(state.type_index) + 1 < size(state.finding_types) ?
@@ -125,64 +135,95 @@ current_step == 3 ?
   ) :
 
 // ─── Step 4: Fetch existing Kibana cases, compute new + stale ───
+// Cases are matched by title = domain_id|finding_title (_unique_key)
 current_step == 4 ?
-  (has(parsed_body.cases) ? parsed_body.cases : []).as(existing_cases,
+  // Handle multiple response formats: {cases:[...]}, {data:[...]}, [...], or {}
+  (has(parsed_body.cases) ? parsed_body.cases :
+   has(parsed_body.data) ? parsed_body.data :
+   type(parsed_body) == list ? parsed_body : []).as(existing_cases,
     // Filter to only bloodhound-tagged cases
     existing_cases.filter(c, has(c.tags) && c.tags.exists(t, t == "bloodhound")).as(bh_cases,
-      // New findings = those whose title is NOT in any existing case
+      // New findings = those whose _unique_key is NOT the title of any existing case
       state.all_findings.filter(f,
-        !bh_cases.exists(c, c.title == (has(f.title) ? f.title : ""))
+        !bh_cases.exists(c, c.title == (has(f._unique_key) ? f._unique_key : ""))
       ).as(new_findings,
-        // Stale cases = existing bh cases whose title is NOT in any finding
+        // Stale cases = existing bh cases whose title is NOT in any finding's _unique_key
         bh_cases.filter(c,
-          !state.all_findings.exists(f, (has(f.title) ? f.title : "") == c.title)
+          !state.all_findings.exists(f, (has(f._unique_key) ? f._unique_key : "") == c.title)
         ).map(c, c.id).as(stale_ids,
           size(new_findings) > 0 ?
             state.with({"step": 5, "new_findings": new_findings, "finding_index": 0,
               "cases_to_delete": stale_ids, "delete_index": 0, "want_more": true,
-              "events": [{"_step": 4, "new_count": size(new_findings), "stale_count": size(stale_ids)}]}) :
+              "_debug_step4": {"resp_status": resp.StatusCode, "resp_body_snippet": string(resp.Body).substring(0, (size(string(resp.Body)) < 200 ? size(string(resp.Body)) : 200)), "total_existing_cases": size(existing_cases), "bh_cases_count": size(bh_cases), "new_count": size(new_findings), "stale_count": size(stale_ids), "all_findings_count": size(state.all_findings)},
+              "events": [{"_step": 4, "new_count": size(new_findings), "stale_count": size(stale_ids), "bh_cases_found": size(bh_cases)}]}) :
           size(stale_ids) > 0 ?
-            state.with({"step": 6, "new_findings": [], "cases_to_delete": stale_ids, "delete_index": 0, "want_more": true,
-              "events": [{"_step": 4, "new_count": 0, "stale_count": size(stale_ids)}]}) :
+            state.with({"step": 7, "new_findings": [], "cases_to_delete": stale_ids, "delete_index": 0, "want_more": true,
+              "_debug_step4": {"resp_status": resp.StatusCode, "resp_body_snippet": string(resp.Body).substring(0, (size(string(resp.Body)) < 200 ? size(string(resp.Body)) : 200)), "total_existing_cases": size(existing_cases), "bh_cases_count": size(bh_cases), "new_count": 0, "stale_count": size(stale_ids), "all_findings_count": size(state.all_findings)},
+              "events": [{"_step": 4, "new_count": 0, "stale_count": size(stale_ids), "bh_cases_found": size(bh_cases)}]}) :
           // Nothing to create or delete — done
           state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-            "events": [{"_step": 4, "info": "All cases in sync, nothing to do"}]})
+            "_debug_step4": {"resp_status": resp.StatusCode, "resp_body_snippet": string(resp.Body).substring(0, (size(string(resp.Body)) < 200 ? size(string(resp.Body)) : 200)), "total_existing_cases": size(existing_cases), "bh_cases_count": size(bh_cases), "new_count": 0, "stale_count": 0, "all_findings_count": size(state.all_findings)},
+            "events": [{"_step": 4, "info": "All cases in sync, nothing to do", "bh_cases_found": size(bh_cases)}]})
         )
       )
     )
   ) :
 
-// ─── Step 5: Create Kibana case for each new finding ───
+// ─── Step 5: Fetch severity for current new finding from Bloodhound domain details API ───
 current_step == 5 ?
+  (has(parsed_body.data) && size(parsed_body.data) > 0 ?
+    // Severity fetched — patch _severity onto the finding and advance to case creation
+    state.new_findings.map(f,
+      f._unique_key == state.new_findings[int(state.finding_index)]._unique_key ?
+        f.with({"_severity": string(parsed_body.data[0].Severity)}) :
+        f
+    ).as(updated_new_findings,
+      state.with({"step": 6, "new_findings": updated_new_findings, "want_more": true,
+        "events": [{"_step": 5, "_uri": uri, "severity": string(parsed_body.data[0].Severity)}]})
+    )
+  :
+    // Could not fetch severity — use "low" as fallback and advance
+    state.new_findings.map(f,
+      f._unique_key == state.new_findings[int(state.finding_index)]._unique_key ?
+        f.with({"_severity": "low"}) :
+        f
+    ).as(updated_new_findings,
+      state.with({"step": 6, "new_findings": updated_new_findings, "want_more": true,
+        "events": [{"_step": 5, "_uri": uri, "info": "Severity not found, defaulting to low"}]})
+    )
+  ) :
+
+// ─── Step 6: Create Kibana case for each new finding ───
+current_step == 6 ?
   (has(parsed_body.id) ?
-    // Case created successfully — advance
+    // Case created successfully — advance to next finding's severity fetch or to delete/done
     (int(state.finding_index) + 1 < size(state.new_findings) ?
       state.with({"step": 5, "finding_index": int(state.finding_index) + 1, "want_more": true,
-        "events": [parsed_body.with({"_step": 5, "_uri": uri})]}) :
+        "events": [parsed_body.with({"_step": 6, "_uri": uri})]}) :
     size(state.cases_to_delete) > 0 ?
-      state.with({"step": 6, "delete_index": 0, "want_more": true,
-        "events": [parsed_body.with({"_step": 5, "_uri": uri})]}) :
+      state.with({"step": 7, "delete_index": 0, "want_more": true,
+        "events": [parsed_body.with({"_step": 6, "_uri": uri})]}) :
     state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-      "events": [parsed_body.with({"_step": 5, "_uri": uri})]}))
+      "events": [parsed_body.with({"_step": 6, "_uri": uri})]}))
   :
     // Case creation failed — still advance
     (int(state.finding_index) + 1 < size(state.new_findings) ?
       state.with({"step": 5, "finding_index": int(state.finding_index) + 1, "want_more": true,
-        "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 5}]}) :
+        "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 6}]}) :
     size(state.cases_to_delete) > 0 ?
-      state.with({"step": 6, "delete_index": 0, "want_more": true,
-        "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 5}]}) :
+      state.with({"step": 7, "delete_index": 0, "want_more": true,
+        "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 6}]}) :
     state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-      "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 5}]}))
+      "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 6}]}))
   ) :
 
-// ─── Step 6: Delete stale Kibana cases one at a time ───
-current_step == 6 ?
+// ─── Step 7: Delete stale Kibana cases one at a time ───
+current_step == 7 ?
   (int(state.delete_index) + 1 < size(state.cases_to_delete) ?
-    state.with({"step": 6, "delete_index": int(state.delete_index) + 1, "want_more": true,
-      "events": [{"_step": 6, "deleted_case_id": string(state.cases_to_delete[int(state.delete_index)]), "_uri": uri}]}) :
+    state.with({"step": 7, "delete_index": int(state.delete_index) + 1, "want_more": true,
+      "events": [{"_step": 7, "deleted_case_id": string(state.cases_to_delete[int(state.delete_index)]), "_uri": uri}]}) :
   state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-    "events": [{"_step": 6, "deleted_case_id": string(state.cases_to_delete[int(state.delete_index)]), "info": "All stale cases deleted"}]})) :
+    "events": [{"_step": 7, "deleted_case_id": string(state.cases_to_delete[int(state.delete_index)]), "info": "All stale cases deleted"}]})) :
 
 // Default fallback
 state.with({"step": 1, "want_more": false})
