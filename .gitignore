@@ -39,3 +39,4 @@ ENV/
 .DS_Store
 
 bloodhound_integration/state.json
+bloodhound_integration/my.md

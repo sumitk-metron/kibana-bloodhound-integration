@@ -1,7 +1,7 @@
 format_version: 3.5.6
 name: bloodhound_integration
 title: "BloodHound Integration"
-version: 0.2.0
+version: 0.2.1
 source:
   license: "Elastic-2.0"
 description: "This Integration is used to fetch issues from BloodHound Enterprise"
@@ -14,15 +14,15 @@ conditions:
   elastic:
     subscription: "basic"
 screenshots:
-  - src: /img/sample-screenshot.png
-    title: Sample screenshot
+  - src: img/BHE_Vertical_PurpleField.png
+    title: Bloodhound Integration
     size: 600x600
     type: image/png
 icons:
-  - src: /img/sample-logo.svg
-    title: Sample logo
+  - src: img/BHE_Vertical_PurpleField.png
+    title: Bloodhound Integration
     size: 32x32
-    type: image/svg+xml
+    type: image/png
 policy_templates:
   - name: BloodHound
     title: Collect BloodHound Enterprise attack paths
