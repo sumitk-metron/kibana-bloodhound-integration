@@ -1,0 +1,24 @@
+- name: bhe
+  type: group
+  fields:
+    - name: self.id
+      type: keyword
+      description: Unique ID of the authenticated BHE user.
+    - name: self.name
+      type: keyword
+      description: Display name of the authenticated BHE user.
+    - name: self.email_address
+      type: keyword
+      description: Email address of the authenticated BHE user.
+    - name: self.principal_name
+      type: keyword
+      description: Principal name of the authenticated BHE user.
+    - name: self.last_login
+      type: date
+      description: Timestamp of the user's last login.
+    - name: self.is_disabled
+      type: boolean
+      description: Whether the authenticated user account is disabled.
+    - name: health_check.status
+      type: keyword
+      description: Result of the credential check — "ok" if credentials are valid.

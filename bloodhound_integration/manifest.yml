@@ -1,0 +1,93 @@
+format_version: 3.5.6
+name: bloodhound_integration
+title: "BloodHound Integration"
+version: 0.2.1
+source:
+  license: "Elastic-2.0"
+description: "This Integration is used to fetch issues from BloodHound Enterprise"
+type: integration
+categories:
+  - custom
+conditions:
+  kibana:
+    version: "^9.3.0"
+  elastic:
+    subscription: "basic"
+screenshots:
+  - src: img/BHE_Vertical_PurpleField.png
+    title: Bloodhound Integration
+    size: 600x600
+    type: image/png
+icons:
+  - src: img/BHE_Vertical_PurpleField.png
+    title: Bloodhound Integration
+    size: 32x32
+    type: image/png
+policy_templates:
+  - name: BloodHound
+    title: Collect BloodHound Enterprise attack paths
+    description: Collect attack paths from the BloodHound Enterprise API
+    deployment_modes:
+      default:
+        enabled: true
+      agentless:
+        enabled: true
+        organization: custom
+        division: engineering
+        team: custom-service-integrations
+    inputs:
+      - type: cel
+        title: Collect BloodHound Enterprise logs via CEL
+        description: Collect logs from the BloodHound Enterprise API using CEL input
+        vars:
+          - name: interval
+            type: text
+            title: Interval
+            description: How often the health check should run (e.g., 1m, 5m)
+            default: 5m
+            multi: false
+            required: false
+            show_user: true
+          - name: base_url
+            type: text
+            title: Base URL
+            description: Base URL of the BloodHound Enterprise API
+            default: https://maplesyrup.bloodhoundenterprise.io
+            multi: false
+            required: false
+            show_user: true
+          - name: token_id
+            type: text
+            title: Token ID
+            description: Token ID for the BloodHound Enterprise API
+            multi: false
+            required: false
+            show_user: true
+            secret: false
+          - name: token_key
+            type: text
+            title: Token Key
+            description: Token Key for the BloodHound Enterprise API
+            multi: false
+            required: false
+            show_user: true
+            secret: false
+          - name: kibana_url
+            type: text
+            title: Kibana URL
+            description: URL of the Kibana instance
+            default: https://elastic-package-stack-kibana-1:5601
+            multi: false
+            required: false
+            show_user: true
+          - name: kibana_api_key
+            type: text
+            title: Kibana API Key
+            description: API Key for Kibana authentication
+            multi: false
+            required: false
+            show_user: true
+            secret: true
+owner:
+  github: sumitk-metron
+  type: elastic
