@@ -4,19 +4,19 @@
 // Step 4: GET finding details (remediation) for new_findings[finding_index]
 // Step 5: GET severity + tier tag from Bloodhound domain details API for new_findings[finding_index]
 // Step 6: POST create case for new_findings[finding_index]
-// Step 7: DELETE stale case cases_to_delete[delete_index]
+// Step 7: PATCH (close) stale case cases_to_delete[delete_index]
 
-(state.step == 6 ? "POST" : state.step == 7 ? "DELETE" : "GET").as(method,
+(state.step == 6 ? "POST" : state.step == 7 ? "PATCH" : "GET").as(method,
 (state.step == 1 ? "/api/v2/available-domains" :
  state.step == 2 ? "/api/cases/_find?perPage=100" :
  state.step == 3 ? "/api/v2/domains/" + string(state.domains[int(state.domain_index)].id) + "/available-types" :
  state.step == 4 ? "/api/v2/findings/" + state.new_findings[int(state.finding_index)].type :
  state.step == 5 ? "/api/v2/domains/" + string(state.new_findings[int(state.finding_index)]._domain_id) + "/details?finding=" + string(state.new_findings[int(state.finding_index)].type) + "&skip=0&limit=1&asset_group_tag_id=" + string(state.new_findings[int(state.finding_index)]._asset_group_tag_id) :
  state.step == 6 ? "/api/cases" :
- "/api/cases?ids=%5B%22" + string(state.cases_to_delete[int(state.delete_index)]) + "%22%5D"
+ "/api/cases"
 ).as(uri,
 
-// Build request body (only for step 6 - case creation)
+// Build request body (for step 6 - case creation, and step 7 - case closing)
 (state.step == 6 && has(state.new_findings) && size(state.new_findings) > 0 ?
   {"title": (has(state.new_findings[int(state.finding_index)]._unique_key) ? state.new_findings[int(state.finding_index)]._unique_key : "Untitled Finding"),
    "category": (has(state.new_findings[int(state.finding_index)]._domain_name) ? string(state.new_findings[int(state.finding_index)]._domain_name) : ""),
@@ -32,6 +32,8 @@
    "connector": {"id": "none", "name": "none", "type": ".none", "fields": null},
    "customFields": []
   }.encode_json()
+: state.step == 7 && has(state.cases_to_delete) && size(state.cases_to_delete) > 0 ?
+  {"cases": [{"id": string(state.cases_to_delete[int(state.delete_index)].id), "version": string(state.cases_to_delete[int(state.delete_index)].version), "status": "closed"}]}.encode_json()
 : "").as(body_data,
 
 // HMAC signature computation (used for BloodHound API steps 1, 3-5)
@@ -136,7 +138,7 @@ current_step == 3 ?
             // All domains/tags exhausted — compute stale cases and proceed
             state.existing_bh_cases.filter(c,
               !updated_all_keys.exists(k, k == c.title)
-            ).map(c, c.id).as(stale_ids,
+            ).map(c, {"id": c.id, "version": c.version}).as(stale_ids,
               size(updated_new_findings) > 0 ?
                 state.with({"step": 4, "new_findings": updated_new_findings, "finding_index": 0,
                   "all_current_keys": updated_all_keys,
@@ -165,7 +167,7 @@ current_step == 3 ?
     // All domains/tags exhausted — compute stale cases and finish
     state.existing_bh_cases.filter(c,
       !state.all_current_keys.exists(k, k == c.title)
-    ).map(c, c.id).as(stale_ids,
+    ).map(c, {"id": c.id, "version": c.version}).as(stale_ids,
       size(stale_ids) > 0 ?
         state.with({"step": 7, "new_findings": [], "cases_to_delete": stale_ids, "delete_index": 0,
           "want_more": true,
@@ -254,14 +256,14 @@ current_step == 6 ?
       "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 6}]}))
   ) :
 
-// ─── Step 7: Delete stale Kibana cases one at a time ───
+// ─── Step 7: Close stale Kibana cases one at a time ───
 current_step == 7 ?
   (int(state.delete_index) + 1 < size(state.cases_to_delete) ?
     state.with({"step": 7, "delete_index": int(state.delete_index) + 1, "want_more": true,
-      "events": [{"_step": 7, "deleted_case_id": string(state.cases_to_delete[int(state.delete_index)]), "_uri": uri}]}) :
+      "events": [{"_step": 7, "closed_case_id": string(state.cases_to_delete[int(state.delete_index)].id), "_uri": uri, "_response": string(resp.Body)}]}) :
   state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
     "all_current_keys": [],
-    "events": [{"_step": 7, "deleted_case_id": string(state.cases_to_delete[int(state.delete_index)]), "info": "All stale cases deleted"}]})) :
+    "events": [{"_step": 7, "closed_case_id": string(state.cases_to_delete[int(state.delete_index)].id), "info": "All stale cases closed", "_response": string(resp.Body)}]})) :
 
 // Default fallback
 state.with({"step": 1, "want_more": false})

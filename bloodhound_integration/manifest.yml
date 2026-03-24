@@ -4,7 +4,7 @@ title: "BloodHound Integration"
 version: 0.2.1
 source:
   license: "Elastic-2.0"
-description: "This Integration is used to fetch issues from BloodHound Enterprise"
+description: "BloodHound Enterprise Integration for fetching and syncing attack paths and findings into Kibana Security cases."
 type: integration
 categories:
   - custom
@@ -14,15 +14,15 @@ conditions:
   elastic:
     subscription: "basic"
 screenshots:
-  - src: img/BHE_Vertical_PurpleField.png
-    title: Bloodhound Integration
+  - src: img/sample-screenshot.png
+    title: Bloodhound Integration Overview
     size: 600x600
     type: image/png
 icons:
-  - src: img/BHE_Vertical_PurpleField.png
+  - src: img/bloodhound_logo.svg
     title: Bloodhound Integration
     size: 32x32
-    type: image/png
+    type: image/svg+xml
 policy_templates:
   - name: BloodHound
     title: Collect BloodHound Enterprise attack paths
