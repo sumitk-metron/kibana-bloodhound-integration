@@ -5,24 +5,27 @@
 // Step 5: GET severity + tier tag from Bloodhound domain details API for new_findings[finding_index]
 // Step 6: POST create case for new_findings[finding_index]
 // Step 7: PATCH (close) stale case cases_to_delete[delete_index]
+// Step 8: POST comment on closed case cases_to_delete[delete_index]
+// Step 9: PATCH (reopen) closed case cases_to_reopen[reopen_index]
 
-(state.step == 6 ? "POST" : state.step == 7 ? "PATCH" : "GET").as(method,
+(state.step == 6 ? "POST" : state.step == 7 ? "PATCH" : state.step == 8 ? "POST" : state.step == 9 ? "PATCH" : "GET").as(method,
 (state.step == 1 ? "/api/v2/available-domains" :
  state.step == 2 ? "/api/cases/_find?perPage=100" :
  state.step == 3 ? "/api/v2/domains/" + string(state.domains[int(state.domain_index)].id) + "/available-types" :
  state.step == 4 ? "/api/v2/findings/" + state.new_findings[int(state.finding_index)].type :
  state.step == 5 ? "/api/v2/domains/" + string(state.new_findings[int(state.finding_index)]._domain_id) + "/details?finding=" + string(state.new_findings[int(state.finding_index)].type) + "&skip=0&limit=1&asset_group_tag_id=" + string(state.new_findings[int(state.finding_index)]._asset_group_tag_id) :
  state.step == 6 ? "/api/cases" :
+ state.step == 8 ? "/api/cases/" + string(state.cases_to_delete[int(state.delete_index)].id) + "/comments" :
  "/api/cases"
 ).as(uri,
 
-// Build request body (for step 6 - case creation, and step 7 - case closing)
+// Build request body (for steps 6, 7, 8, 9)
 (state.step == 6 && has(state.new_findings) && size(state.new_findings) > 0 ?
   {"title": (has(state.new_findings[int(state.finding_index)]._unique_key) ? state.new_findings[int(state.finding_index)]._unique_key : "Untitled Finding"),
    "category": (has(state.new_findings[int(state.finding_index)]._domain_name) ? string(state.new_findings[int(state.finding_index)]._domain_name) : ""),
    "severity": (has(state.new_findings[int(state.finding_index)]._severity) ? string(state.new_findings[int(state.finding_index)]._severity) : "low"),
    "tags": ["bloodhound",
-            (has(state.new_findings[int(state.finding_index)]._tier_tag) && state.new_findings[int(state.finding_index)]._tier_tag != "" ? string(state.new_findings[int(state.finding_index)]._tier_tag) : "unknown")],
+            (has(state.new_findings[int(state.finding_index)]._asset_group_tag_name) && state.new_findings[int(state.finding_index)]._asset_group_tag_name != "" ? string(state.new_findings[int(state.finding_index)]._asset_group_tag_name) : "unknown")],
    "description": "## Short Remediation\n\n" +
      (has(state.new_findings[int(state.finding_index)].short_remediation) ? state.new_findings[int(state.finding_index)].short_remediation : "") +
      "\n\n## Long Remediation\n\n" +
@@ -34,6 +37,10 @@
   }.encode_json()
 : state.step == 7 && has(state.cases_to_delete) && size(state.cases_to_delete) > 0 ?
   {"cases": [{"id": string(state.cases_to_delete[int(state.delete_index)].id), "version": string(state.cases_to_delete[int(state.delete_index)].version), "status": "closed"}]}.encode_json()
+: state.step == 8 && has(state.cases_to_delete) && size(state.cases_to_delete) > 0 ?
+  {"comment": "Closed by system at " + now.format("2006-01-02T15:04:05Z07:00") + ". Reason: Finding no longer present in BloodHound Enterprise.", "type": "user", "owner": "securitySolution"}.encode_json()
+: state.step == 9 && has(state.cases_to_reopen) && size(state.cases_to_reopen) > 0 ?
+  {"cases": [{"id": string(state.cases_to_reopen[int(state.reopen_index)].id), "version": string(state.cases_to_reopen[int(state.reopen_index)].version), "status": "open"}]}.encode_json()
 : "").as(body_data,
 
 // HMAC signature computation (used for BloodHound API steps 1, 3-5)
@@ -45,8 +52,8 @@ base64(hmac(bytes(body_data), "sha256", date_key)).as(signature,
 int(state.step).as(current_step,
 
 // Execute HTTP request
-request(method, (current_step == 2 || current_step == 6 || current_step == 7 ? state.kibana_url : state.base_url) + uri).with({
-  "Header": (current_step == 2 || current_step == 6 || current_step == 7 ?
+request(method, (current_step == 2 || current_step == 6 || current_step == 7 || current_step == 8 || current_step == 9 ? state.kibana_url : state.base_url) + uri).with({
+  "Header": (current_step == 2 || current_step == 6 || current_step == 7 || current_step == 8 || current_step == 9 ?
     {"Authorization": ["ApiKey " + state.kibana_api_key], "Content-Type": ["application/json"], "kbn-xsrf": ["true"]} :
     {"Authorization": ["bhesignature " + state.token_id], "RequestDate": [timestamp], "Signature": [signature], "Content-Type": ["application/json"]}
   ),
@@ -101,7 +108,7 @@ current_step == 2 ?
 
 // ─── Step 3: Get available-types, compare with existing cases ───
 // For each type, build key "domain_name| type". Only keep genuinely new types.
-// Also accumulate all_current_keys for stale-case detection later.
+// Also accumulate all_current_keys for stale-case and reopen detection later.
 current_step == 3 ?
   // Extract types from response — handle both {data: [...]} and direct array responses
   (has(parsed_body.data) ? parsed_body.data : (type(parsed_body) == list ? parsed_body : [])).as(raw_types,
@@ -126,7 +133,7 @@ current_step == 3 ?
             !state.existing_case_titles.exists(title, title == f._unique_key) &&
             !state.new_findings.exists(existing, existing._unique_key == f._unique_key)
           )).as(updated_new_findings,
-            // Advance: more tags → step 3, more domains → step 3, else → compute stale + proceed
+            // Advance: more tags → step 3, more domains → step 3, else → compute stale + reopen + proceed
             int(state.tag_index) + 1 < size(state.domains[int(state.domain_index)].tags) ?
               state.with({"step": 3, "tag_index": int(state.tag_index) + 1,
                 "all_current_keys": updated_all_keys, "new_findings": updated_new_findings,
@@ -135,24 +142,35 @@ current_step == 3 ?
               state.with({"step": 3, "domain_index": int(state.domain_index) + 1, "tag_index": 0,
                 "all_current_keys": updated_all_keys, "new_findings": updated_new_findings,
                 "want_more": true, "events": [{"_step": 3, "_uri": uri, "types_found": size(types_list), "new_so_far": size(updated_new_findings)}]}) :
-            // All domains/tags exhausted — compute stale cases and proceed
+            // All domains/tags exhausted — compute stale cases and reopen candidates
             state.existing_bh_cases.filter(c,
-              !updated_all_keys.exists(k, k == c.title)
+              !updated_all_keys.exists(k, k == c.title) && c.status != "closed"
             ).map(c, {"id": c.id, "version": c.version}).as(stale_ids,
+            state.existing_bh_cases.filter(c,
+              updated_all_keys.exists(k, k == c.title) && c.status == "closed"
+            ).map(c, {"id": c.id, "version": c.version}).as(reopen_ids,
               size(updated_new_findings) > 0 ?
                 state.with({"step": 4, "new_findings": updated_new_findings, "finding_index": 0,
                   "all_current_keys": updated_all_keys,
-                  "cases_to_delete": stale_ids, "delete_index": 0, "want_more": true,
-                  "events": [{"_step": 3, "new_count": size(updated_new_findings), "stale_count": size(stale_ids)}]}) :
+                  "cases_to_delete": stale_ids, "delete_index": 0,
+                  "cases_to_reopen": reopen_ids, "reopen_index": 0, "want_more": true,
+                  "events": [{"_step": 3, "new_count": size(updated_new_findings), "stale_count": size(stale_ids), "reopen_count": size(reopen_ids)}]}) :
               size(stale_ids) > 0 ?
                 state.with({"step": 7, "new_findings": [], "cases_to_delete": stale_ids, "delete_index": 0,
                   "all_current_keys": updated_all_keys,
+                  "cases_to_reopen": reopen_ids, "reopen_index": 0,
                   "want_more": true,
-                  "events": [{"_step": 3, "new_count": 0, "stale_count": size(stale_ids)}]}) :
+                  "events": [{"_step": 3, "new_count": 0, "stale_count": size(stale_ids), "reopen_count": size(reopen_ids)}]}) :
+              size(reopen_ids) > 0 ?
+                state.with({"step": 9, "new_findings": [], "cases_to_delete": [],
+                  "cases_to_reopen": reopen_ids, "reopen_index": 0,
+                  "all_current_keys": updated_all_keys,
+                  "want_more": true,
+                  "events": [{"_step": 3, "new_count": 0, "stale_count": 0, "reopen_count": size(reopen_ids)}]}) :
               state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-                "all_current_keys": [],
+                "all_current_keys": [], "cases_to_reopen": [],
                 "events": [{"_step": 3, "info": "All cases in sync, nothing to do"}]})
-            )
+            ))
           )
         )
       )
@@ -164,23 +182,34 @@ current_step == 3 ?
     int(state.domain_index) + 1 < size(state.domains) ?
       state.with({"step": 3, "domain_index": int(state.domain_index) + 1, "tag_index": 0, "want_more": true,
         "events": [{"info": "No types found, advancing domain", "_step": 3, "_domain": string(state.domains[int(state.domain_index)].name), "_raw": string(resp.Body)}]}) :
-    // All domains/tags exhausted — compute stale cases and finish
+    // All domains/tags exhausted — compute stale cases and reopen candidates
     state.existing_bh_cases.filter(c,
-      !state.all_current_keys.exists(k, k == c.title)
+      !state.all_current_keys.exists(k, k == c.title) && c.status != "closed"
     ).map(c, {"id": c.id, "version": c.version}).as(stale_ids,
+    state.existing_bh_cases.filter(c,
+      state.all_current_keys.exists(k, k == c.title) && c.status == "closed"
+    ).map(c, {"id": c.id, "version": c.version}).as(reopen_ids,
       size(stale_ids) > 0 ?
         state.with({"step": 7, "new_findings": [], "cases_to_delete": stale_ids, "delete_index": 0,
+          "cases_to_reopen": reopen_ids, "reopen_index": 0,
           "want_more": true,
-          "events": [{"_step": 3, "new_count": 0, "stale_count": size(stale_ids)}]}) :
+          "events": [{"_step": 3, "new_count": 0, "stale_count": size(stale_ids), "reopen_count": size(reopen_ids)}]}) :
       size(state.new_findings) > 0 ?
         state.with({"step": 4, "finding_index": 0,
           "all_current_keys": state.all_current_keys,
+          "cases_to_reopen": reopen_ids, "reopen_index": 0,
           "want_more": true,
-          "events": [{"_step": 3, "info": "No types in last call but have pending new findings", "new_count": size(state.new_findings)}]}) :
+          "events": [{"_step": 3, "info": "No types in last call but have pending new findings", "new_count": size(state.new_findings), "reopen_count": size(reopen_ids)}]}) :
+      size(reopen_ids) > 0 ?
+        state.with({"step": 9, "new_findings": [], "cases_to_delete": [],
+          "cases_to_reopen": reopen_ids, "reopen_index": 0,
+          "all_current_keys": state.all_current_keys,
+          "want_more": true,
+          "events": [{"_step": 3, "new_count": 0, "stale_count": 0, "reopen_count": size(reopen_ids)}]}) :
       state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-        "all_current_keys": [],
+        "all_current_keys": [], "cases_to_reopen": [],
         "events": [{"_step": 3, "info": "All cases in sync, nothing to do"}]})
-    ))
+    )))
   )) :
 
 // ─── Step 4: Fetch finding details (remediation text) for current new finding ───
@@ -233,15 +262,18 @@ current_step == 5 ?
 // ─── Step 6: Create Kibana case for each new finding ───
 current_step == 6 ?
   (has(parsed_body.id) ?
-    // Case created successfully — advance to next finding's details fetch or to delete/done
+    // Case created successfully — advance to next finding or to close/reopen/done
     (int(state.finding_index) + 1 < size(state.new_findings) ?
       state.with({"step": 4, "finding_index": int(state.finding_index) + 1, "want_more": true,
         "events": [parsed_body.with({"_step": 6, "_uri": uri})]}) :
     size(state.cases_to_delete) > 0 ?
       state.with({"step": 7, "delete_index": 0, "want_more": true,
         "events": [parsed_body.with({"_step": 6, "_uri": uri})]}) :
+    has(state.cases_to_reopen) && size(state.cases_to_reopen) > 0 ?
+      state.with({"step": 9, "reopen_index": 0, "want_more": true,
+        "events": [parsed_body.with({"_step": 6, "_uri": uri})]}) :
     state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-      "all_current_keys": [],
+      "all_current_keys": [], "cases_to_reopen": [],
       "events": [parsed_body.with({"_step": 6, "_uri": uri})]}))
   :
     // Case creation failed — still advance
@@ -251,19 +283,41 @@ current_step == 6 ?
     size(state.cases_to_delete) > 0 ?
       state.with({"step": 7, "delete_index": 0, "want_more": true,
         "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 6}]}) :
+    has(state.cases_to_reopen) && size(state.cases_to_reopen) > 0 ?
+      state.with({"step": 9, "reopen_index": 0, "want_more": true,
+        "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 6}]}) :
     state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-      "all_current_keys": [],
+      "all_current_keys": [], "cases_to_reopen": [],
       "events": [{"error": "Case creation failed", "_body": string(resp.Body), "_step": 6}]}))
   ) :
 
-// ─── Step 7: Close stale Kibana cases one at a time ───
+// ─── Step 7: Close stale Kibana case — then proceed to Step 8 for comment ───
 current_step == 7 ?
+  state.with({"step": 8, "want_more": true,
+    "events": [{"_step": 7, "closed_case_id": string(state.cases_to_delete[int(state.delete_index)].id), "_uri": uri, "_response": string(resp.Body)}]}) :
+
+// ─── Step 8: Add comment to the just-closed case, then advance to next stale case or proceed ───
+current_step == 8 ?
   (int(state.delete_index) + 1 < size(state.cases_to_delete) ?
+    // More stale cases — go back to Step 7 for next one
     state.with({"step": 7, "delete_index": int(state.delete_index) + 1, "want_more": true,
-      "events": [{"_step": 7, "closed_case_id": string(state.cases_to_delete[int(state.delete_index)].id), "_uri": uri, "_response": string(resp.Body)}]}) :
+      "events": [{"_step": 8, "commented_case_id": string(state.cases_to_delete[int(state.delete_index)].id), "_response": string(resp.Body)}]}) :
+  // All stale cases closed and commented — check if we need to reopen any
+  has(state.cases_to_reopen) && size(state.cases_to_reopen) > 0 ?
+    state.with({"step": 9, "reopen_index": 0, "want_more": true,
+      "events": [{"_step": 8, "commented_case_id": string(state.cases_to_delete[int(state.delete_index)].id), "info": "All stale cases closed and commented, proceeding to reopen"}]}) :
   state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
-    "all_current_keys": [],
-    "events": [{"_step": 7, "closed_case_id": string(state.cases_to_delete[int(state.delete_index)].id), "info": "All stale cases closed", "_response": string(resp.Body)}]})) :
+    "all_current_keys": [], "cases_to_reopen": [],
+    "events": [{"_step": 8, "commented_case_id": string(state.cases_to_delete[int(state.delete_index)].id), "info": "All stale cases closed and commented"}]})) :
+
+// ─── Step 9: Reopen closed cases that are still present in BloodHound ───
+current_step == 9 ?
+  (int(state.reopen_index) + 1 < size(state.cases_to_reopen) ?
+    state.with({"step": 9, "reopen_index": int(state.reopen_index) + 1, "want_more": true,
+      "events": [{"_step": 9, "reopened_case_id": string(state.cases_to_reopen[int(state.reopen_index)].id), "_uri": uri, "_response": string(resp.Body)}]}) :
+  state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
+    "all_current_keys": [], "cases_to_reopen": [],
+    "events": [{"_step": 9, "reopened_case_id": string(state.cases_to_reopen[int(state.reopen_index)].id), "info": "All closed cases reopened", "_response": string(resp.Body)}]})) :
 
 // Default fallback
 state.with({"step": 1, "want_more": false})

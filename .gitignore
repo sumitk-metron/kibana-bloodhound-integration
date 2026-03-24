@@ -40,3 +40,4 @@ ENV/
 
 bloodhound_integration/state.json
 bloodhound_integration/my.md
+bloodhound_integration/test_state_close.json
