@@ -11,7 +11,7 @@
 (state.step == 6 ? "POST" : state.step == 7 ? "PATCH" : state.step == 8 ? "POST" : state.step == 9 ? "PATCH" : "GET").as(method,
 (state.step == 1 ? "/api/v2/available-domains" :
  state.step == 2 ? "/api/cases/_find?perPage=100" :
- state.step == 3 ? "/api/v2/domains/" + string(state.domains[int(state.domain_index)].id) + "/available-types" :
+ state.step == 3 ? "/api/v2/domains/" + string(state.domains[int(state.domain_index)].id) + "/available-types?asset_group_tag_id=" + string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].id) :
  state.step == 4 ? "/api/v2/findings/" + state.new_findings[int(state.finding_index)].type :
  state.step == 5 ? "/api/v2/domains/" + string(state.new_findings[int(state.finding_index)]._domain_id) + "/details?finding=" + string(state.new_findings[int(state.finding_index)].type) + "&skip=0&limit=1&asset_group_tag_id=" + string(state.new_findings[int(state.finding_index)]._asset_group_tag_id) :
  state.step == 6 ? "/api/cases" :
@@ -24,8 +24,10 @@
   {"title": (has(state.new_findings[int(state.finding_index)]._unique_key) ? state.new_findings[int(state.finding_index)]._unique_key : "Untitled Finding"),
    "category": (has(state.new_findings[int(state.finding_index)]._domain_name) ? string(state.new_findings[int(state.finding_index)]._domain_name) : ""),
    "severity": (has(state.new_findings[int(state.finding_index)]._severity) ? string(state.new_findings[int(state.finding_index)]._severity) : "low"),
-   "tags": ["bloodhound",
-            (has(state.new_findings[int(state.finding_index)]._asset_group_tag_name) && state.new_findings[int(state.finding_index)]._asset_group_tag_name != "" ? string(state.new_findings[int(state.finding_index)]._asset_group_tag_name) : "unknown")],
+   "tags": (["bloodhound"] +
+             (has(state.new_findings[int(state.finding_index)]._asset_group_tag_name) && state.new_findings[int(state.finding_index)]._asset_group_tag_name != "" ? [string(state.new_findings[int(state.finding_index)]._asset_group_tag_name)] : []) +
+             (has(state.new_findings[int(state.finding_index)]._tier_tag) && state.new_findings[int(state.finding_index)]._tier_tag != "" && state.new_findings[int(state.finding_index)]._tier_tag != state.new_findings[int(state.finding_index)]._asset_group_tag_name ? [string(state.new_findings[int(state.finding_index)]._tier_tag)] : [])
+            ).filter(t, t != ""),
    "description": "## Short Remediation\n\n" +
      (has(state.new_findings[int(state.finding_index)].short_remediation) ? state.new_findings[int(state.finding_index)].short_remediation : "") +
      "\n\n## Long Remediation\n\n" +
@@ -73,13 +75,13 @@ current_step == 1 ?
       "id": string(d.id),
       "name": string(d.name),
       "tags": (has(d.exposures) && size(d.exposures) > 0 ?
-        d.exposures.map(e, {"id": string(e.asset_group_tag.id), "name": string(e.asset_group_tag.name)}) : [{"id": "1", "name": "default"}])
+        d.exposures.map(e, {"id": string(e.asset_group_tag.id), "name": string(e.asset_group_tag.name)}) : [])
     }).as(domains_list,
       state.with({
         "step": 2,
         "domains": domains_list,
         "want_more": true,
-        "events": [parsed_body.with({"_step": 1, "_uri": uri})]
+        "events": [{"_step": 1, "domains_count": size(domains_list), "domains": domains_list}]
       })
     ) :
     state.with({"events": [{"error": "No domains found", "_step": 1, "_raw": string(resp.Body)}], "step": 1, "want_more": false})
@@ -116,7 +118,7 @@ current_step == 3 ?
     // Extract type strings from response
     raw_types.map(t, type(t) == string ? t : (has(t.finding_type) ? string(t.finding_type) : (has(t.id) ? string(t.id) : string(t)))).as(types_list,
       // Build current keys: "domain_name| type" for all types in this response
-      types_list.map(t, string(state.domains[int(state.domain_index)].name) + "| " + t).as(current_keys,
+      types_list.map(t, string(state.domains[int(state.domain_index)].name) + "| " + t + " (" + string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].name) + ")").as(current_keys,
         // Add to all_current_keys (deduped)
         (state.all_current_keys + current_keys.filter(k, !state.all_current_keys.exists(ek, ek == k))).as(updated_all_keys,
           // New findings: types whose key is NOT in existing case titles AND not already in new_findings
@@ -127,22 +129,23 @@ current_step == 3 ?
               "_domain_name": string(state.domains[int(state.domain_index)].name),
               "_asset_group_tag_id": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].id),
               "_asset_group_tag_name": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].name),
-              "_unique_key": string(state.domains[int(state.domain_index)].name) + "| " + t
+              "_unique_key": string(state.domains[int(state.domain_index)].name) + "| " + t + " (" + string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].name) + ")"
             }
           ).filter(f,
             !state.existing_case_titles.exists(title, title == f._unique_key) &&
-            !state.new_findings.exists(existing, existing._unique_key == f._unique_key)
+            !state.new_findings.exists(existing, existing._unique_key == f._unique_key) &&
+            f._asset_group_tag_name != "" && f._asset_group_tag_name != "default" && f._asset_group_tag_name != "unknown"
           )).as(updated_new_findings,
-            // Advance: more tags → step 3, more domains → step 3, else → compute stale + reopen + proceed
+            // Advance: more domains → step 3, else → compute stale + reopen + proceed
             int(state.tag_index) + 1 < size(state.domains[int(state.domain_index)].tags) ?
-              state.with({"step": 3, "tag_index": int(state.tag_index) + 1,
+              state.with({"step": 3, "domain_index": state.domain_index, "tag_index": int(state.tag_index) + 1,
                 "all_current_keys": updated_all_keys, "new_findings": updated_new_findings,
-                "want_more": true, "events": [{"_step": 3, "_uri": uri, "types_found": size(types_list), "new_so_far": size(updated_new_findings)}]}) :
+                "want_more": true, "events": [{"_step": 3, "_uri": uri, "tag": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].name), "new_so_far": size(updated_new_findings)}]}) :
             int(state.domain_index) + 1 < size(state.domains) ?
               state.with({"step": 3, "domain_index": int(state.domain_index) + 1, "tag_index": 0,
                 "all_current_keys": updated_all_keys, "new_findings": updated_new_findings,
-                "want_more": true, "events": [{"_step": 3, "_uri": uri, "types_found": size(types_list), "new_so_far": size(updated_new_findings)}]}) :
-            // All domains/tags exhausted — compute stale cases and reopen candidates
+                "want_more": true, "events": [{"_step": 3, "_uri": uri, "tag": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].name), "new_so_far": size(updated_new_findings)}]}) :
+            // All domains exhausted — compute stale cases and reopen candidates
             state.existing_bh_cases.filter(c,
               !updated_all_keys.exists(k, k == c.title) && c.status != "closed"
             ).map(c, {"id": c.id, "version": c.version}).as(stale_ids,
@@ -175,14 +178,14 @@ current_step == 3 ?
         )
       )
     ) :
-    // No types for this domain+tag combo — advance to next tag/domain or finish
-    (int(state.tag_index) + 1 < size(state.domains[int(state.domain_index)].tags) ?
-      state.with({"step": 3, "tag_index": int(state.tag_index) + 1, "want_more": true,
-        "events": [{"info": "No types found, advancing tag", "_step": 3, "_domain": string(state.domains[int(state.domain_index)].name), "_raw": string(resp.Body)}]}) :
+    // No types for this domain — advance to next domain or finish
+    int(state.tag_index) + 1 < size(state.domains[int(state.domain_index)].tags) ?
+      state.with({"step": 3, "domain_index": state.domain_index, "tag_index": int(state.tag_index) + 1, "want_more": true,
+        "events": [{"info": "No types found, advancing tag", "_step": 3, "_domain": string(state.domains[int(state.domain_index)].name), "_tag": string(state.domains[int(state.domain_index)].tags[int(state.tag_index)].name), "_raw": string(resp.Body)}]}) :
     int(state.domain_index) + 1 < size(state.domains) ?
       state.with({"step": 3, "domain_index": int(state.domain_index) + 1, "tag_index": 0, "want_more": true,
         "events": [{"info": "No types found, advancing domain", "_step": 3, "_domain": string(state.domains[int(state.domain_index)].name), "_raw": string(resp.Body)}]}) :
-    // All domains/tags exhausted — compute stale cases and reopen candidates
+    // All domains exhausted — compute stale cases and reopen candidates
     state.existing_bh_cases.filter(c,
       !state.all_current_keys.exists(k, k == c.title) && c.status != "closed"
     ).map(c, {"id": c.id, "version": c.version}).as(stale_ids,
@@ -209,7 +212,7 @@ current_step == 3 ?
       state.with({"step": 1, "want_more": false, "all_findings": [], "new_findings": [], "cases_to_delete": [],
         "all_current_keys": [], "cases_to_reopen": [],
         "events": [{"_step": 3, "info": "All cases in sync, nothing to do"}]})
-    )))
+    ))
   )) :
 
 // ─── Step 4: Fetch finding details (remediation text) for current new finding ───
@@ -246,7 +249,7 @@ current_step == 5 ?
         }) : f
     ).as(updated_new_findings,
       state.with({"step": 6, "new_findings": updated_new_findings, "want_more": true,
-        "events": [{"_step": 5, "_uri": uri, "severity": string(parsed_body.data[0].Severity)}]})
+        "events": [{"_step": 5, "_uri": uri, "severity": string(parsed_body.data[0].Severity),"new_findings_count": size(updated_new_findings),"new_findings": updated_new_findings}]})
     )
   :
     // Could not fetch severity — use "low" as fallback
