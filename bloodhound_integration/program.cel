@@ -76,6 +76,8 @@ current_step == 1 ?
       "name": string(d.name),
       "tags": (has(d.exposures) && size(d.exposures) > 0 ?
         d.exposures.map(e, {"id": string(e.asset_group_tag.id), "name": string(e.asset_group_tag.name)}) : [])
+        + (has(d.hygiene_attack_paths) && int(d.hygiene_attack_paths) > 0 ?
+           [{"id": "0", "name": "hygiene"}] : [])
     }).as(domains_list,
       state.with({
         "step": 2,
