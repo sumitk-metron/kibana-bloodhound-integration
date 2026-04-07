@@ -58,7 +58,8 @@ program: |
                (has(state.new_findings[int(state.finding_index)]._asset_group_tag_name) && state.new_findings[int(state.finding_index)]._asset_group_tag_name != "" ? [string(state.new_findings[int(state.finding_index)]._asset_group_tag_name)] : []) +
                (has(state.new_findings[int(state.finding_index)]._tier_tag) && state.new_findings[int(state.finding_index)]._tier_tag != "" && state.new_findings[int(state.finding_index)]._tier_tag != state.new_findings[int(state.finding_index)]._asset_group_tag_name ? [string(state.new_findings[int(state.finding_index)]._tier_tag)] : [])
               ).filter(t, t != ""),
-     "description": "## Short Remediation\n\n" +
+     "description": "[View in BloodHound](https://maplesyrup.bloodhoundenterprise.io/ui/remediation?environmentId=" + string(state.new_findings[int(state.finding_index)]._domain_id) + "&findingType=" + string(state.new_findings[int(state.finding_index)].type) + "&assetGroupTagId=" + string(state.new_findings[int(state.finding_index)]._asset_group_tag_id) + ")" +
+     "\n\n## Short Remediation\n\n" +
        (has(state.new_findings[int(state.finding_index)].short_remediation) ? state.new_findings[int(state.finding_index)].short_remediation : "") +
        "\n\n## Long Remediation\n\n" +
        (has(state.new_findings[int(state.finding_index)].long_remediation) ? state.new_findings[int(state.finding_index)].long_remediation : ""),
